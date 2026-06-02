@@ -22,7 +22,7 @@ import { buildWorkdayFromTemplate } from "./domain/timeEngine";
 import { reduceSnapshot } from "./domain/stateMachine";
 import { createDefaultConfig } from "./domain/storage";
 import { formatClock, formatDuration, minutesBetween, minutesBetweenIso, toIso } from "./domain/time";
-import type { AppConfig, AppSnapshot, ParsedTemplate, StageInstance, TimelineSegment, WorkdayStatus } from "./domain/types";
+import type { AppConfig, AppSnapshot, ParsedTemplate, StageInstance, TimelineSegment, WorkdayStatus, WorkdaySummary } from "./domain/types";
 import { createStoragePort } from "./platform/storageFactory";
 import {
   getNotificationAvailability,
@@ -66,6 +66,10 @@ export default function App() {
   const [preview, setPreview] = useState<ParsedTemplate | undefined>();
   const [now, setNow] = useState(new Date());
   const [incidentNote, setIncidentNote] = useState("");
+  const [historyWorkdays, setHistoryWorkdays] = useState<WorkdaySummary[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const [selectedHistorySnapshot, setSelectedHistorySnapshot] = useState<AppSnapshot | undefined>();
+  const [historyError, setHistoryError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processedReminderRef = useRef("");
 
@@ -97,6 +101,11 @@ export default function App() {
       void sendSnapshotUpdated(snapshot);
     }
   }, [snapshot]);
+
+  useEffect(() => {
+    if (isReminderView || view !== "history") return;
+    void loadHistoryArchive();
+  }, [view, snapshot?.workdayState.workdayId, snapshot?.events.length]);
 
   useEffect(() => {
     if (isReminderView || !snapshot || snapshot.notificationStatus) return;
@@ -298,6 +307,26 @@ export default function App() {
     void hideReminderWindow();
   }
 
+  async function loadHistoryArchive(preferredWorkdayId?: string) {
+    try {
+      const summaries = await storage.listWorkdays();
+      const currentWorkdayId = snapshot?.workdayState.workdayId;
+      const candidateId = preferredWorkdayId || selectedHistoryId;
+      const targetId =
+        (candidateId && summaries.some((item) => item.workdayId === candidateId) ? candidateId : undefined) ||
+        (currentWorkdayId && summaries.some((item) => item.workdayId === currentWorkdayId) ? currentWorkdayId : undefined) ||
+        summaries[0]?.workdayId ||
+        "";
+
+      setHistoryWorkdays(summaries);
+      setSelectedHistoryId(targetId);
+      setSelectedHistorySnapshot(targetId ? await storage.loadWorkdaySnapshot(targetId) : undefined);
+      setHistoryError("");
+    } catch (error) {
+      setHistoryError(`读取历史归档失败：${(error as Error).message}`);
+    }
+  }
+
   function endIncident() {
     setSnapshot((current) =>
       current ? reduceSnapshot(current, { type: "endIncident", now: new Date(), note: incidentNote.trim() || undefined }) : current
@@ -441,7 +470,16 @@ export default function App() {
           </>
         )}
 
-        {view === "history" && <HistoryView snapshot={snapshot} />}
+        {view === "history" && (
+          <HistoryView
+            workdays={historyWorkdays}
+            selectedWorkdayId={selectedHistoryId}
+            selectedSnapshot={selectedHistorySnapshot}
+            error={historyError}
+            onSelectWorkday={(workdayId) => void loadHistoryArchive(workdayId)}
+            onRefresh={() => void loadHistoryArchive(selectedHistoryId)}
+          />
+        )}
         {view === "settings" && (
           <SettingsView
             snapshot={snapshot}
@@ -700,35 +738,122 @@ function Timeline({ stages, segments, now }: { stages: StageInstance[]; segments
   );
 }
 
-function HistoryView({ snapshot }: { snapshot: AppSnapshot }) {
+function HistoryView(props: {
+  workdays: WorkdaySummary[];
+  selectedWorkdayId: string;
+  selectedSnapshot?: AppSnapshot;
+  error: string;
+  onSelectWorkday(workdayId: string): void;
+  onRefresh(): void;
+}) {
+  const archive = props.selectedSnapshot;
+  const selectedSummary = props.workdays.find((item) => item.workdayId === props.selectedWorkdayId);
+  const completedStages = archive?.stages.filter((stage) => stage.status === "completed").length ?? 0;
+  const changedStages = archive?.stages.filter((stage) => stage.actualStart || stage.actualEnd || stage.terminated || stage.endedEarly).length ?? 0;
+
   return (
-    <section className="content-panel">
+    <section className="content-panel history-archive">
       <div className="section-title">
-        <h2>历史记录</h2>
-        <span>按作息日归档，只读</span>
+        <h2>历史归档</h2>
+        <button className="secondary" onClick={props.onRefresh}>
+          <RefreshCw size={18} /> 刷新
+        </button>
       </div>
-      <div className="history-list">
-        {snapshot.timeline.map((segment) => (
-          <article key={segment.id} className="history-item">
-            <strong>{segment.name}</strong>
-            <span>{segmentTypeText(segment.type)}</span>
-            <span>
-              {formatClock(segment.start)}-{formatClock(segment.end)}
-            </span>
-            {segment.note && <p>{segment.note}</p>}
-          </article>
-        ))}
-      </div>
-      <div className="section-title">
-        <h2>事件流</h2>
-        <span>{snapshot.events.length} 条事件</span>
-      </div>
-      <div className="event-list">
-        {snapshot.events.map((event) => (
-          <span key={event.id}>
-            {formatClock(event.occurredAt)} · {event.type}
-          </span>
-        ))}
+
+      {props.error && <pre className="error-box">{props.error}</pre>}
+
+      <div className="history-layout">
+        <aside className="history-workday-list">
+          <div className="history-list-header">
+            <strong>作息日</strong>
+            <span>{props.workdays.length} 条</span>
+          </div>
+          {props.workdays.length === 0 && <p className="muted">暂无历史归档。</p>}
+          {props.workdays.map((workday) => (
+            <button
+              key={workday.workdayId}
+              className={workday.workdayId === props.selectedWorkdayId ? "history-workday active" : "history-workday"}
+              onClick={() => props.onSelectWorkday(workday.workdayId)}
+            >
+              <span>{formatArchiveDateRange(workday)}</span>
+              <small>{statusText(workday.status)}</small>
+            </button>
+          ))}
+        </aside>
+
+        <div className="history-detail">
+          {!archive && (
+            <div className="history-empty">
+              <History size={32} />
+              <strong>{selectedSummary ? "该作息日暂无完整归档" : "请选择作息日"}</strong>
+              <p className="muted">新的 SQLite 归档会在作息日状态保存时自动写入。</p>
+            </div>
+          )}
+
+          {archive && (
+            <>
+              <section className="history-summary">
+                <Metric label="作息范围" value={formatWorkdayRange(archive)} />
+                <Metric label="最终状态" value={statusText(archive.workdayState.status)} />
+                <Metric label="阶段完成" value={`${completedStages}/${archive.stages.length}`} />
+                <Metric label="有变更阶段" value={`${changedStages}`} />
+              </section>
+
+              <div className="section-title">
+                <h2>阶段详情</h2>
+                <span>原计划 / 当前计划 / 实际执行</span>
+              </div>
+              <div className="history-stage-list">
+                {archive.stages.map((stage) => (
+                  <article className={`stage-card stage-${stage.status}`} key={stage.id}>
+                    <div>
+                      <span className="stage-index">第 {stage.templateStageIndex} 段</span>
+                      <h3>{stage.name}</h3>
+                      {stage.note && <p className="muted">{stage.note}</p>}
+                    </div>
+                    <div className="time-grid">
+                      <span>原计划：{formatClock(stage.originalStart)}-{formatClock(stage.originalEnd)}</span>
+                      <span>
+                        当前计划：{formatClock(stage.currentStart)}-{formatClock(stage.currentEnd)} {planDeltaText(stage)}
+                      </span>
+                      <span>实际：{actualText(stage, new Date())}</span>
+                      <span>状态：{stageStatusText(stage.status)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="section-title">
+                <h2>完整时间线</h2>
+                <span>{archive.timeline.length} 个片段</span>
+              </div>
+              <div className="history-list">
+                {archive.timeline.map((segment) => (
+                  <article key={segment.id} className="history-item">
+                    <strong>{segment.name}</strong>
+                    <span>{segmentTypeText(segment.type)}</span>
+                    <span>
+                      {formatClock(segment.start)}-{formatClock(segment.end)}
+                    </span>
+                    {segment.note && <p>{segment.note}</p>}
+                  </article>
+                ))}
+              </div>
+
+              <div className="section-title">
+                <h2>事件流</h2>
+                <span>{archive.events.length} 条事件</span>
+              </div>
+              <div className="event-list">
+                {archive.events.map((event) => (
+                  <span key={event.id}>
+                    {formatClock(event.occurredAt)} · {event.type}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -817,6 +942,10 @@ function formatWorkdayRange(snapshot: AppSnapshot): string {
   const end = snapshot.workdayState.workdayEnd;
   if (!start || !end) return "未建立作息日";
   return `${new Date(start).toLocaleDateString("zh-CN")} ${formatClock(start)} - ${new Date(end).toLocaleDateString("zh-CN")} ${formatClock(end)}`;
+}
+
+function formatArchiveDateRange(workday: WorkdaySummary): string {
+  return `${new Date(workday.start).toLocaleDateString("zh-CN")} ${formatClock(workday.start)} - ${new Date(workday.end).toLocaleDateString("zh-CN")} ${formatClock(workday.end)}`;
 }
 
 function activeTimerText(snapshot: AppSnapshot, stage: StageInstance | undefined, now: Date): string {

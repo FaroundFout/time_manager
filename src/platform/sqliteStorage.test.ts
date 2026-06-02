@@ -76,4 +76,12 @@ describe("SqliteStoragePort", () => {
     await new SqliteStoragePort().clearPersistedData();
     expect(invokeMock).toHaveBeenCalledWith("clear_persisted_data");
   });
+
+  it("loads a full workday archive through the sqlite command", async () => {
+    const snapshot = makeSnapshot();
+    invokeMock.mockResolvedValueOnce(snapshot);
+
+    await expect(new SqliteStoragePort().loadWorkdaySnapshot("workday_1")).resolves.toEqual(snapshot);
+    expect(invokeMock).toHaveBeenCalledWith("load_workday_snapshot", { workdayId: "workday_1" });
+  });
 });

@@ -86,6 +86,11 @@ fn list_workdays(db: State<'_, Arc<DbState>>) -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
+fn load_workday_snapshot(db: State<'_, Arc<DbState>>, workday_id: String) -> Result<Option<Value>, String> {
+    persistence::load_workday_snapshot_from_db(db.inner().as_ref(), workday_id)
+}
+
+#[tauri::command]
 fn migrate_local_storage_snapshot(db: State<'_, Arc<DbState>>, snapshot: Value) -> Result<bool, String> {
     if persistence::load_snapshot_from_db(db.inner().as_ref())?.is_some() {
         return Ok(false);
@@ -123,6 +128,7 @@ pub fn run() {
             list_events,
             save_template_snapshot,
             list_workdays,
+            load_workday_snapshot,
             migrate_local_storage_snapshot,
             clear_persisted_data
         ])

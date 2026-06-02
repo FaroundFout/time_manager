@@ -46,6 +46,11 @@ export class LocalStoragePort implements StoragePort {
     ];
   }
 
+  async loadWorkdaySnapshot(workdayId: string): Promise<AppSnapshot | undefined> {
+    const snapshot = await this.loadSnapshot();
+    return snapshot?.workdayState.workdayId === workdayId ? snapshot : undefined;
+  }
+
   async clearPersistedData(): Promise<void> {
     window.localStorage.removeItem(SNAPSHOT_KEY);
   }

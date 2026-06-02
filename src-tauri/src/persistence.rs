@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use tauri::{Manager, Runtime};
 
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
 
 pub struct DbState {
     connection: Mutex<Connection>,
@@ -59,6 +59,7 @@ pub fn save_snapshot_to_db(state: &DbState, snapshot: Value) -> Result<(), Strin
         .map_err(|error| format!("保存快照失败：{error}"))?;
 
     upsert_workday_summary(&transaction, &snapshot)?;
+    upsert_workday_archive(&transaction, &snapshot)?;
     if let Some(template) = snapshot.get("template") {
         upsert_template(&transaction, template)?;
     }
@@ -137,6 +138,21 @@ pub fn list_workdays_from_db(state: &DbState) -> Result<Vec<Value>, String> {
     Ok(workdays)
 }
 
+pub fn load_workday_snapshot_from_db(state: &DbState, workday_id: String) -> Result<Option<Value>, String> {
+    let connection = lock_connection(state)?;
+    let raw = connection
+        .query_row(
+            "SELECT json FROM workday_archives WHERE workday_id = ?1",
+            params![workday_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取作息日归档失败：{error}"))?;
+
+    raw.map(|text| serde_json::from_str(&text).map_err(|error| format!("作息日归档 JSON 损坏：{error}")))
+        .transpose()
+}
+
 pub fn clear_persisted_data_in_db(state: &DbState) -> Result<(), String> {
     let mut connection = lock_connection(state)?;
     let transaction = connection
@@ -147,7 +163,8 @@ pub fn clear_persisted_data_in_db(state: &DbState) -> Result<(), String> {
             "DELETE FROM snapshots;
              DELETE FROM events;
              DELETE FROM templates;
-             DELETE FROM workdays;",
+             DELETE FROM workdays;
+             DELETE FROM workday_archives;",
         )
         .map_err(|error| format!("清空数据库失败：{error}"))?;
     transaction
@@ -190,6 +207,11 @@ fn initialize_schema(connection: &Connection) -> Result<(), String> {
                start TEXT NOT NULL,
                end TEXT NOT NULL,
                status TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS workday_archives (
+               workday_id TEXT PRIMARY KEY,
+               json TEXT NOT NULL,
                updated_at TEXT NOT NULL
              );",
         )
@@ -269,6 +291,28 @@ fn upsert_workday_summary(transaction: &Transaction<'_>, snapshot: &Value) -> Re
         )
         .map(|_| ())
         .map_err(|error| format!("保存作息日摘要失败：{error}"))
+}
+
+fn upsert_workday_archive(transaction: &Transaction<'_>, snapshot: &Value) -> Result<(), String> {
+    let Some(state) = snapshot.get("workdayState") else {
+        return Ok(());
+    };
+    let Some(workday_id) = optional_string(state, "workdayId") else {
+        return Ok(());
+    };
+    let json = serde_json::to_string(snapshot).map_err(|error| format!("序列化作息日归档失败：{error}"))?;
+
+    transaction
+        .execute(
+            "INSERT INTO workday_archives (workday_id, json, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(workday_id) DO UPDATE SET
+               json = excluded.json,
+               updated_at = excluded.updated_at",
+            params![workday_id, json],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("保存作息日归档失败：{error}"))
 }
 
 trait ExecuteSql {
@@ -373,10 +417,14 @@ mod tests {
         let state = test_state();
         save_snapshot_to_db(&state, snapshot_json()).expect("save snapshot");
         let loaded = load_snapshot_from_db(&state).expect("load snapshot").expect("snapshot exists");
+        let archived = load_workday_snapshot_from_db(&state, "workday_1".to_string())
+            .expect("load archive")
+            .expect("archive exists");
         let workdays = list_workdays_from_db(&state).expect("list workdays");
         let events = list_events_from_db(&state, Some("workday_1".to_string())).expect("list events");
 
         assert_eq!(loaded["workdayState"]["workdayId"], "workday_1");
+        assert_eq!(archived["workdayState"]["workdayId"], "workday_1");
         assert_eq!(workdays.len(), 1);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["id"], "event_1");
@@ -443,6 +491,9 @@ mod tests {
         clear_persisted_data_in_db(&state).expect("clear data");
 
         assert!(load_snapshot_from_db(&state).expect("load snapshot").is_none());
+        assert!(load_workday_snapshot_from_db(&state, "workday_1".to_string())
+            .expect("load archive")
+            .is_none());
         assert!(list_events_from_db(&state, None).expect("list events").is_empty());
         assert!(list_workdays_from_db(&state).expect("list workdays").is_empty());
     }

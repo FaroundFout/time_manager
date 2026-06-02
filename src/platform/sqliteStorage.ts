@@ -38,6 +38,11 @@ export class SqliteStoragePort implements StoragePort {
     return invoke<WorkdaySummary[]>("list_workdays");
   }
 
+  async loadWorkdaySnapshot(workdayId: string): Promise<AppSnapshot | undefined> {
+    const snapshot = await invoke<AppSnapshot | null>("load_workday_snapshot", { workdayId });
+    return snapshot ?? undefined;
+  }
+
   async clearPersistedData(): Promise<void> {
     await invoke("clear_persisted_data");
   }
