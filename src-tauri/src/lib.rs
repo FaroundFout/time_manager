@@ -1,0 +1,151 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, State, WindowEvent,
+};
+
+const MAIN_WINDOW_LABEL: &str = "main";
+const REMINDER_WINDOW_LABEL: &str = "reminder";
+const EVENT_REQUEST_EXIT: &str = "time-manager://request-exit-confirmation";
+const EVENT_REMINDER_ACTION: &str = "time-manager://reminder-action";
+
+struct QuitState {
+    is_quitting: AtomicBool,
+}
+
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle, quit_state: State<'_, Arc<QuitState>>) {
+    quit_state.is_quitting.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    show_main_window_handle(&app);
+}
+
+#[tauri::command]
+fn show_reminder_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(REMINDER_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn hide_reminder_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(REMINDER_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+fn play_reminder_sound() {
+    play_system_prompt_sound();
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(Arc::new(QuitState {
+            is_quitting: AtomicBool::new(false),
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window_handle(app);
+        }))
+        .invoke_handler(tauri::generate_handler![
+            exit_app,
+            show_main_window,
+            show_reminder_window,
+            hide_reminder_window,
+            play_reminder_sound
+        ])
+        .setup(|app| {
+            setup_tray(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let should_quit = window
+                    .state::<Arc<QuitState>>()
+                    .is_quitting
+                    .load(Ordering::SeqCst);
+
+                if !should_quit {
+                    api.prevent_close();
+                    if window.label() == REMINDER_WINDOW_LABEL {
+                        let _ = window.app_handle().emit(EVENT_REMINDER_ACTION, "snoozeReminder");
+                    }
+                    let _ = window.hide();
+                }
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open_item = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(app, "exit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open_item, &exit_item])?;
+
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("时间管理程序")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => show_main_window_handle(app),
+            "exit" => request_exit_confirmation(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window_handle(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn show_main_window_handle(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn request_exit_confirmation(app: &tauri::AppHandle) {
+    show_main_window_handle(app);
+    let _ = app.emit(EVENT_REQUEST_EXIT, ());
+}
+
+#[cfg(target_os = "windows")]
+fn play_system_prompt_sound() {
+    use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONEXCLAMATION;
+
+    unsafe {
+        let _ = MessageBeep(MB_ICONEXCLAMATION);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn play_system_prompt_sound() {}
