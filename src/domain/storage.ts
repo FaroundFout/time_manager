@@ -45,6 +45,10 @@ export class LocalStoragePort implements StoragePort {
       }
     ];
   }
+
+  async clearPersistedData(): Promise<void> {
+    window.localStorage.removeItem(SNAPSHOT_KEY);
+  }
 }
 
 export function createDefaultConfig() {

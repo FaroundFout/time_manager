@@ -20,9 +20,10 @@ import { parseScheduleMarkdown, ScheduleParseError } from "./domain/schedulePars
 import { evaluateReminder } from "./domain/reminderEngine";
 import { buildWorkdayFromTemplate } from "./domain/timeEngine";
 import { reduceSnapshot } from "./domain/stateMachine";
-import { createDefaultConfig, LocalStoragePort } from "./domain/storage";
+import { createDefaultConfig } from "./domain/storage";
 import { formatClock, formatDuration, minutesBetween, minutesBetweenIso, toIso } from "./domain/time";
 import type { AppConfig, AppSnapshot, ParsedTemplate, StageInstance, TimelineSegment, WorkdayStatus } from "./domain/types";
+import { createStoragePort } from "./platform/storageFactory";
 import {
   getNotificationAvailability,
   hideReminderWindow,
@@ -44,7 +45,7 @@ import type { ReminderAction } from "./platform/desktopBridge";
 
 type View = "today" | "history" | "settings";
 
-const storage = new LocalStoragePort();
+const storage = createStoragePort();
 const isReminderView = window.location.hash === "#reminder";
 
 const exampleMarkdown = `日程起点: 08:00
@@ -352,7 +353,7 @@ export default function App() {
           <div>
             <p className="eyebrow">首次启用</p>
             <h1>选择每日作息 Markdown</h1>
-            <p className="muted">成功解析并启用前，不会启动提醒。当前阶段仍使用本地浏览器存储保存状态。</p>
+            <p className="muted">成功解析并启用前，不会启动提醒。桌面版会使用本地 SQLite 数据库保存状态。</p>
           </div>
           <label className="field">
             <span>选择本地 Markdown 文件</span>
@@ -451,9 +452,8 @@ export default function App() {
             onConfigChange={updateConfig}
             onApplyLatest={applyLatestSchedule}
             onResetLocalData={() => {
-              if (window.confirm("确认清空本地开发数据？")) {
-                window.localStorage.clear();
-                window.location.reload();
+              if (window.confirm("确认清空本地数据？")) {
+                storage.clearPersistedData().then(() => window.location.reload());
               }
             }}
           />
@@ -793,7 +793,7 @@ function SettingsView(props: {
       </label>
       <div className="notice">
         <AlertTriangle size={18} />
-        提醒窗口、系统通知和声音提醒已接入；SQLite 和开机自启动将在后续阶段接入。
+        提醒窗口、系统通知、声音提醒和 SQLite 持久化已接入；开机自启动将在后续阶段接入。
       </div>
       <label className="field full">
         <span>最新 Markdown 内容</span>
@@ -805,7 +805,7 @@ function SettingsView(props: {
           <RefreshCw size={18} /> 应用最新日程
         </button>
         <button className="danger" onClick={props.onResetLocalData}>
-          <TimerReset size={18} /> 清空本地开发数据
+          <TimerReset size={18} /> 清空本地数据
         </button>
       </div>
     </section>

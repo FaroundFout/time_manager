@@ -179,4 +179,5 @@ export interface StoragePort {
   listEvents(workdayId?: string): Promise<EventRecord[]>;
   saveTemplateSnapshot(template: ParsedTemplate): Promise<void>;
   listWorkdays(): Promise<WorkdaySummary[]>;
+  clearPersistedData(): Promise<void>;
 }

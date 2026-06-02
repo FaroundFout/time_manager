@@ -17,6 +17,8 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"

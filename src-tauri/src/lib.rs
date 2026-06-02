@@ -3,11 +3,15 @@ use std::sync::{
     Arc,
 };
 
+use serde_json::Value;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, State, WindowEvent,
 };
+
+mod persistence;
+use persistence::DbState;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const REMINDER_WINDOW_LABEL: &str = "reminder";
@@ -51,6 +55,50 @@ fn play_reminder_sound() {
     play_system_prompt_sound();
 }
 
+#[tauri::command]
+fn load_snapshot(db: State<'_, Arc<DbState>>) -> Result<Option<Value>, String> {
+    persistence::load_snapshot_from_db(db.inner().as_ref())
+}
+
+#[tauri::command]
+fn save_snapshot(db: State<'_, Arc<DbState>>, snapshot: Value) -> Result<(), String> {
+    persistence::save_snapshot_to_db(db.inner().as_ref(), snapshot)
+}
+
+#[tauri::command]
+fn append_event(db: State<'_, Arc<DbState>>, event: Value) -> Result<(), String> {
+    persistence::append_event_to_db(db.inner().as_ref(), event)
+}
+
+#[tauri::command]
+fn list_events(db: State<'_, Arc<DbState>>, workday_id: Option<String>) -> Result<Vec<Value>, String> {
+    persistence::list_events_from_db(db.inner().as_ref(), workday_id)
+}
+
+#[tauri::command]
+fn save_template_snapshot(db: State<'_, Arc<DbState>>, template: Value) -> Result<(), String> {
+    persistence::save_template_to_db(db.inner().as_ref(), template)
+}
+
+#[tauri::command]
+fn list_workdays(db: State<'_, Arc<DbState>>) -> Result<Vec<Value>, String> {
+    persistence::list_workdays_from_db(db.inner().as_ref())
+}
+
+#[tauri::command]
+fn migrate_local_storage_snapshot(db: State<'_, Arc<DbState>>, snapshot: Value) -> Result<bool, String> {
+    if persistence::load_snapshot_from_db(db.inner().as_ref())?.is_some() {
+        return Ok(false);
+    }
+    persistence::save_snapshot_to_db(db.inner().as_ref(), snapshot)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn clear_persisted_data(db: State<'_, Arc<DbState>>) -> Result<(), String> {
+    persistence::clear_persisted_data_in_db(db.inner().as_ref())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -68,9 +116,19 @@ pub fn run() {
             show_main_window,
             show_reminder_window,
             hide_reminder_window,
-            play_reminder_sound
+            play_reminder_sound,
+            load_snapshot,
+            save_snapshot,
+            append_event,
+            list_events,
+            save_template_snapshot,
+            list_workdays,
+            migrate_local_storage_snapshot,
+            clear_persisted_data
         ])
         .setup(|app| {
+            let db = persistence::init_database(app).expect("failed to initialize sqlite database");
+            app.manage(Arc::new(db));
             setup_tray(app)?;
             Ok(())
         })
